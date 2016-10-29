@@ -135,8 +135,15 @@ class Solver(object):
         self.result = self.regresssor.predict(self.features)
         self.error = self.result * self.tonesgn + self.pebcd - self.wcd
         coeffs = self.regresssor.coef_
-        return RMS(self.error, wt), coeffs
+        outmodel = self.packModelCoeff(coeffs)
+        return RMS(self.error, wt), outmodel
 
+    def packModelCoeff(self, coeffs):
+        inmodel = self.model
+        outmodel = {}
+        for i, k in enumerate(inmodel.keys()):
+            outmodel[k] = inmodel[k] + (coeffs[i],)
+        return outmodel
 
 if __name__ == '__main__':
     curpath=os.path.dirname(os.path.realpath(__file__))
@@ -150,8 +157,9 @@ if __name__ == '__main__':
              'Bn':    (62.84, 0.5),
              'MG1':   (164.22, 0),
              'Slope': (0,0)}
-    rms = s.fit(model)
+    rms, model = s.fit(model)
     print 'Solver rms: {}'.format(rms)
+    print model
     '''
     startime = timeit.default_timer()
     for i in range(100):
