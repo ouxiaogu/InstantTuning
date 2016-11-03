@@ -7,15 +7,13 @@ Created on Thu Oct 06 14:14:24 2016
 Genetic algorithm in python
     1. Initialize the search-able parameters into GA seeds by random algorithm
     2. Get the RMS value of current generation of chromosomes by Linear solver
-    3. Fitness selection by RMS, only best chromNum models survive
-    4. GA operation, crossover and mutate to reproduce the next generation of chromosomes
+    3. Fitness selection include two steps:
+        1). elite selection: the elites only will mutate
+        2). mates selection: select the individuals into the mate pool, and
+        crossover pair by pair, 3 selection methods are implemented:
+        rms_ranking, linear_ranking, tournament
+    4. Crossover and mutate to reproduce the next generation of chromosomes
     5. Repeat 2-4 until met stop condition
-
-Need to integration:
-    1. linear solver in python
-        i). derive the signals of current GA seeds
-        ii). get the Rmses & coefficients by python linear solver
-    2. Search-parameter-specific steps, i.e., the accuracy in python GA should be a list
 """
 
 from numpy import random
@@ -32,43 +30,45 @@ DEBUG = 1
 
 class GeneticAlgorithm(object):
     """GA class"""
-    def __init__(self, chromNum, muteRate, accuracy,
-                        stageNum, rmsThres, signalpath):
+    def __init__(self, chromNum, eliteRate, muteRate, accuracy, stageNum,
+                rmsThres, signalpath, selectmethod='rms_ranking', save=True):
         super(GeneticAlgorithm, self).__init__()
         self.chromNum = chromNum
+        self.eliteRate = eliteRate
         self.muteRate = muteRate
         self.accuracy = accuracy
         self.stageNum = stageNum
         self.rmsThres = rmsThres
         self.signalpath = signalpath
         self.lm = Solver(signalpath, regressor='linear')
+        self.selectmethod = selectmethod
+        self.save = save
 
     def run(self, parmMin, parmMax, parmSamples, termpairs):
         # perform optimization based on GA
 
         # initialize 1st generation
+        random.seed(0)
         stageIdx = 1
-        jobparms, initGen = self.init(parmMin, parmMax, parmSamples, termpairs)
+        jobparms, newChroms = self.init(parmMin, parmMax, parmSamples, termpairs)
         if DEBUG:
             # self.print_parm_samples()
             print "parmSamples = %s\nparmNames = %s\nparmBound = %s" % (str(parmSamples), str(self.parmNames), str(self.parmBound))
-        newRmses, models = self.optimize(jobparms)
-        initGen.set_chrom_result(stageIdx, models, newRmses)
         self.population = Population(wakerAmount=self.chromNum)
-        self.population.chromosomes += initGen.chromosomes[:]
 
         # optimization iterations
         while not self.check_stop(stageIdx):
-            if DEBUG:
-                print  "\nGA print, stage %s:\nminRMS = %f\nparmVals = %s\nrmses = %s\n" % (stageIdx, self.population.minRMS, str(jobparms), str(newRmses))
-
-            self.population.fitness_selection(method='')
-
-            stageIdx += 1
-            jobparms, newChroms = self.population.perform_ga_operations(self.muteRate, self.parmMin, self.parmMax, self.parmSamples, self.parmNames, self.parmBound) # self memeber variable parmMin~parmbound are lists
             newRmses, models = self.optimize(jobparms)
-            self.population.survivorGen.set_chrom_result(stageIdx, models, newRmses)
-            self.population.chromosomes += self.population.survivorGen.chromosomes[:]
+            wakerGen = Generation(newChroms)
+            wakerGen.set_gen_property(stageIdx, models, newRmses)
+            self.population.append_gen(wakerGen)
+            if DEBUG:
+                print  "\nGA print, stage %s:\nminRMS = %f\nparmVals = %s\nrmses = %s\n" % (stageIdx, self.population.get_min_rms(), str(jobparms), str(newRmses))
+            jobparms, newChroms = self.population.perform_ga_operations(self.eliteRate, self.muteRate, self.parmMin, self.parmMax, self.parmSamples, self.parmNames, self.parmBound, stageIdx, self.selectmethod) # self member variable parmMin~parmbound are lists
+            stageIdx += 1
+
+        if self.save:
+            self.population.save_model_results(path = os.path.dirname(self.signalpath), sheetname=self.selectmethod)
         pass
 
     def init(self, parmMin, parmMax, parmSamples, termpairs):
@@ -92,10 +92,10 @@ class GeneticAlgorithm(object):
         chromNum = self.chromNum
         chromosomes = []
         jobparms = [] # all the chromosome vals
-        random.seed(0)
+        basechrom = Chromosome()
         for ii in range(chromNum):
-            chm = Chromosome()
-            chm = chm.rand_init_chrom(parmSamples, parmBound)
+            chm = basechrom.clone_chrom(nochildren=True)
+            chm.rand_init_chrom(parmSamples, parmBound)
 
             jobparm = chm.back_parm(parmMin, parmMax, parmSamples, parmBound)
             jobparmtable = {parmNames[jj]: jobparm[jj] for jj in range(len(parmNames))}
@@ -103,15 +103,13 @@ class GeneticAlgorithm(object):
             chromosomes.append(chm)
             jobparms.append(jobparmtable)
 
-        initGen = Generation(chromosomes)
-
         # stack the list format parmValue into class
         self.parmMin = parmMin
         self.parmMax = parmMax
-        self.parmBound = parmBound
         self.parmNames = parmNames
         self.parmSamples = parmSamples
-        return jobparms, initGen
+        self.parmBound = parmBound
+        return jobparms, chromosomes
 
     def append_chrom(self, parmVals):
         pass
@@ -123,14 +121,13 @@ class GeneticAlgorithm(object):
             assert(parmSamples[i] > 1e-7)
             assert('int' in str(type(parmSamples[i])))
             numSamples = parmSamples[i]
-            binLength = math.log(numSamples-1, 2) # idx starts from 0
-            binLength = int(math.floor(binLength)+1)     # binary
+            binLength = math.log(numSamples, 2) # idx starts from 0
+            binLength = int(math.floor(binLength)+1)
             parmBound.append(binLength)
         return parmBound
 
     def check_stop(self, stageIdx):
-        if self.population.cal_min_rms() <= self.rmsThres:
-            # print stageIdx, 'rms', self.population.minRMS, self.rmsThres
+        if self.population.get_min_rms() <= self.rmsThres:
             return True
         if stageIdx > self.stageNum:
             return True
@@ -141,6 +138,7 @@ class GeneticAlgorithm(object):
         # possible option is add spec-ratio into cost function
         termpairs = self.termpairs
         models = []
+        rmses = []
         for i, jobparm in enumerate(jobparms):
             jobinput = covert_job_parm(jobparm, termpairs)
             rms, model = self.lm.fit(jobinput)
@@ -196,15 +194,18 @@ class Chromosome(object):
         self.rms = rms
         self.parentID = parentID
         self.childIDs = childIDs
+        self.str_chrom()
 
     def set_chrom_result(self, genIdx=0, chromIdx=0, model={}, rms=0.,):
         self.genIdx = genIdx
         self.chromIdx = chromIdx
         self.model = model
         self.rms = rms
+        self.str_chrom()
 
     def rand_init_chrom(self, parmSamples, parmBound):
         """randomly initialize chromosome by bin length and max range of the parameters"""
+        self.init_chrom_property()
         parmChrom = []
         for i in range(len(parmBound)):
             curParmVal = random.randint(0, parmSamples[i]) # np.random, low (inclusive) to high (exclusive).
@@ -212,7 +213,6 @@ class Chromosome(object):
             parmChrom += subChrom
         self.parmChrom = parmChrom # chromosome sequence
         self.parmNum = len(parmSamples)
-        return self
 
     def dec2bin(self, num, length):
         binChar = bin(num)
@@ -222,7 +222,7 @@ class Chromosome(object):
         binVal = [int(aa) for aa in binChar]
         return binVal
 
-    def clone_chrom(self):
+    def clone_chrom(self, nochildren=False):
         newChrom = Chromosome()
         newChrom.parmChrom = copy.deepcopy(self.parmChrom)
         newChrom.parmNum = self.parmNum
@@ -231,7 +231,10 @@ class Chromosome(object):
         newChrom.model = copy.deepcopy(self.model)
         newChrom.rms = self.rms
         newChrom.parentID = self.parentID
-        newChrom.childIDs = copy.deepcopy(childIDs)
+        if nochildren == True:
+            newChrom.childIDs = []
+        else:
+            newChrom.childIDs = copy.deepcopy(self.childIDs)
         return newChrom
 
     def back_parm(self, parmMin, parmMax, parmSamples, parmBound):
@@ -255,7 +258,7 @@ class Chromosome(object):
         pos = 0
         for ii in range(parmIdx):
             pos += parmBound[ii]
-        chmTemp = self.clone_chrom()
+        chmTemp = self.clone_chrom(nochildren=True)
         self.parmChrom = self.parmChrom[:pos] + mother.parmChrom[pos:]
         mother.parmChrom = mother.parmChrom[:pos] + chmTemp.parmChrom[pos:]
 
@@ -288,27 +291,6 @@ class Generation(object):
         for i, chm in enumerate(self.chromosomes):
             chm.set_chrom_result(stageIdx, i, models[i], rmses[i])
 
-    def empty_gen(self):
-        if len(self.chromosomes) > 0:
-            return False
-        else:
-            return True
-
-    def clone_gen(self):
-        newChroms = [ii.clone_chrom() for ii in self.chromosomes]
-        newGen = Generation(newChroms)
-        return newGen
-
-    def sort_chroms(self):
-        chromNum = len(self.chromosomes)
-        for ii in range(0, chromNum-1):
-            for jj in range(ii, chromNum):
-                if self.chromosomes[ii].rms > self.chromosomes[jj].rms:
-                    temp = self.chromosomes[ii].clone_chrom()
-                    self.chromosomes[ii] = self.chromosomes[jj].clone_chrom()
-                    self.chromosomes[jj] = temp
-        pass
-
 class Population(object):
     '''
     New data structure for population, data stored as a class, contain multiple
@@ -339,26 +321,31 @@ class Population(object):
         self.chromosomes += gen.chromosomes[:]
         self.totalIndividuals = len(self.chromosomes)
         self.singlepool = range(self.totalIndividuals)
+        self.matepoolNum = self.wakerAmount # reinit the matepool size
+
+    def get_min_rms(self):
+        rmses = [chm.rms for chm in self.chromosomes]
+        if len(rmses) == 0:
+            return np.nan
+        return np.min(rmses)
 
     def elite_selection(self, eliteRate=0):
+        '''mutation will be performed on the chromosomes who are selected
+        into elite pool, but not crossover'''
         assert(0<=eliteRate<1)
-        eliteNum = int(np.ceil(self.totalIndividuals*eliteRate))
+        self.elitepool = []
+        eliteNum = int(np.ceil(self.wakerAmount*eliteRate))
         rmses = [chm.rms for chm in self.chromosomes]
         eliteIndexes = np.argsort(rmses)[:eliteNum] # model of top N
 
-        self.matepoolNum -= len(elites)
+        self.matepoolNum -= eliteNum
         self.rmses = rmses
         self.elitepool = eliteIndexes[:]
         self.singlepool = list(np.delete(self.singlepool, eliteIndexes))
 
-    def matepool_selection(self, method=""):
-        '''
-        fitness selection is similar with merge sort
-        1st generation survivors always are the initGen
-        2nd and further generation survivors
-            - useChildGen=True, use child generation to perform GA operation
-            - useChildGen=False, then use Best N models to perform GA generation
-        '''
+    def mate_selection(self, method=""):
+        '''Both crossover & mutation will be performed on the chromosomes
+        who are selected into mate pool'''
         methods = ['rms_ranking', 'linear_ranking', 'tournament']
         assert(method in methods)
         self.matepool = []
@@ -370,43 +357,137 @@ class Population(object):
         elif method == 'tournament':
             self.matepool = tournament(self.rmses, self.singlepool, self.matepoolNum, tourSize=2)
 
-    def perform_ga_operations(self, eliteRate, muteRate, parmMin, parmMax, parmSamples, parmNames, parmBound, selMethod='rms_ranking'):
+    def perform_ga_operations(self, eliteRate, muteRate, parmMin, parmMax,
+        parmSamples, parmNames, parmBound, stageIdx, selectmethod='rms_ranking'):
         '''
         1. elite selection
         2. matepool selection and perform crossover from tail to head
-        3. wakerpool = elite + matepool, mutate on the waker pool
+        3. wakerpool = elitepool + matepool, mutate on the waker pool
         '''
         # selection
         self.elite_selection(eliteRate)
-        self.matepool_selection(selMethod)
+        self.mate_selection(selectmethod)
+
+        elitePoolChroms = [self.chromosomes[ii] for ii in self.elitepool]
         matePoolChroms = [self.chromosomes[ii] for ii in self.matepool]
+        wakerPoolChroms = [] # wakers or survivors
+        for chm in elitePoolChroms:
+            wakerPoolChroms.append(chm.clone_chrom(nochildren=True))
+        for chm in matePoolChroms:
+            wakerPoolChroms.append(chm.clone_chrom(nochildren=True))
+        eliteNum = len(elitePoolChroms)
+        mateNum = len(matePoolChroms)
+        wakerNum = len(wakerPoolChroms)
+        if DEBUG:
+            print "Stage %d\nElite pool: %s\nMate pool: %s\n" % (stageIdx, str(self.elitepool), str(self.matepool))
+
+        # elite
+        if mateNum%2 != 0:
+            elitepool = np.append(self.elitepool, self.matepool[0]) # the last single at mate actually is elite
+        else:
+            elitepool = self.elitepool[:]
+        if DEBUG:
+            print "Stage %d\nElite pool: %s\nMate pool: %s\n" % (stageIdx, elitepool, str(self.matepool))
+
+        for ii, parentIdx in enumerate(elitepool):
+            wakerPoolChroms[ii].parentID =  '{}_{}_{}_{}'.format(parentIdx/wakerNum+1, parentIdx%wakerNum, parentIdx/wakerNum+1, parentIdx%wakerNum)
+            self.chromosomes[parentIdx].childIDs.append('{}_{}'.format(stageIdx+1, ii))
+            # ypcLog, hard-coded testing
+            print "parentIdx %d, childIDs = %s" % (parentIdx, str(self.chromosomes[parentIdx].childIDs))
 
         # crossover
-        childrenChroms = matePoolChroms[:]
         parmNum = len(parmSamples) ## perform GA operator on unit of parm
-        chromNum = len(childrenChroms)
-        chromIdx = chromNum - 1
-        while (chromIdx > 1):
+        chromIdx = wakerNum - 1
+        while (chromIdx > eliteNum):
+            print "chromIdx = %d" % chromIdx
+
+            mateIdx = chromIdx - eliteNum
+            fatherIdx = self.matepool[mateIdx]
+            motherIdx = self.matepool[mateIdx-1]
             parmIdx = random.randint(0, parmNum) # np.random, low (inclusive) to high (exclusive).
-            childrenChroms[chromIdx].crossover(childrenChroms[chromIdx-1], parmIdx, parmBound)
+            # ypcLog, hard-coded testing
+            print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
+            print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
+            wakerPoolChroms[chromIdx].crossover(wakerPoolChroms[chromIdx-1], parmIdx, parmBound)
+            wakerPoolChroms[chromIdx].parentID = '{}_{}_{}_{}'.format(fatherIdx/wakerNum+1, fatherIdx%wakerNum, motherIdx/wakerNum, motherIdx%wakerNum)
+            wakerPoolChroms[chromIdx-1].parentID = '{}_{}_{}_{}'.format(fatherIdx/wakerNum+1, fatherIdx%wakerNum, motherIdx/wakerNum, motherIdx%wakerNum)
+            # ypcLog, hard-coded testing
+            print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
+            print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
+            self.chromosomes[fatherIdx].childIDs.extend(['{}_{}'.format(stageIdx+1, chromIdx), '{}_{}'.format(stageIdx+1, chromIdx-1)])
+            self.chromosomes[motherIdx].childIDs.extend(['{}_{}'.format(stageIdx+1, chromIdx), '{}_{}'.format(stageIdx+1, chromIdx-1)])
+            # ypcLog, hard-coded testing
+            print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
+            print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
+            '''
+            for ii in [chromIdx, chromIdx-1]:
+                wakerPoolChroms[ii].parentID = '{}_{}_{}_{}'.format(fatherIdx/wakerNum+1, fatherIdx%wakerNum, motherIdx/wakerNum, motherIdx%wakerNum)
+                # ypcLog, hard-coded testing
+                print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
+                print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
+                self.chromosomes[fatherIdx].childIDs.append('{}_{}'.format(stageIdx+1, ii))
+                self.chromosomes[motherIdx].childIDs.append('{}_{}'.format(stageIdx+1, ii))
+
+            '''
             chromIdx -= 2
-        --- 08.29 10/28/2016
+
         # mutation
-        for ii in range(chromNum):
+        for ii in range(wakerNum):
             muteCri = ii * muteRate # binary
             parmIndexes = [pp for pp in range(parmNum) if random.random() < muteCri] #np, half-open interval [0.0, 1.0).
-            childGen.chromosomes[ii].mutate(parmIndexes, parmSamples, parmBound)
+            wakerPoolChroms[ii].mutate(parmIndexes, parmSamples, parmBound)
             if DEBUG:
-                print 'chrom %d: %s' % (ii, childGen.chromosomes[ii].str_chrom())
+                print 'chrom %d: %s' % (ii, wakerPoolChroms[ii].str_chrom())
 
-        # translate the new parmChrom into job parameters
-        # newChroms = self.survivorGen.chromosomes ## list assignment don't work
+        # translation: chromosome to job param
         jobparms = []
-        for curChrom in childGen.chromosomes:
-            jobparm = curChrom.back_parm(parmMin, parmMax, parmSamples, parmBound)
+        for chm in wakerPoolChroms:
+            jobparm = chm.back_parm(parmMin, parmMax, parmSamples, parmBound)
             jobparmtable = {parmNames[jj]: jobparm[jj] for jj in range(len(parmNames))}
             jobparms.append(jobparmtable)
-        return jobparms, childGen.chromosomes
+        return jobparms, wakerPoolChroms
+
+    def save_model_results(self, path=os.getcwd(), sheetname='sheet1'):
+        keys = ['genIdx', 'chromIdx', 'strChrom', 'rms', 'model', 'parentID', 'childIDs'] # hard-coded
+        fixedTruncTerms = {"Ap": "b0_ratio", "Bp": "b0_ratio", "Am": "b0m_ratio", "Bn": "b0n_ratio"}# hard-coded
+        df = pd.DataFrame()
+        for chm in self.chromosomes:
+            dictChrom = chm.__dict__
+            result = {}
+            coeffs = []
+            sigmas = []
+            ratios = []
+            for key in keys:
+                if key in dictChrom.keys():
+                    if key == 'model':
+                        for termname, termvals in dictChrom['model'].items():
+                            sigma, truncRatio, coeff = termvals
+                            result['c{}'.format(termname)] = coeff
+                            coeffs.append('c{}'.format(termname))
+                            if sigma != 0:
+                                result['sigma{}'.format(termname)] = sigma
+                                sigmas.append('sigma{}'.format(termname))
+                            ratioName = ''
+                            if truncRatio != 0:
+                                if termname in fixedTruncTerms.keys():
+                                    ratioName = fixedTruncTerms[termname]
+                                else:
+                                    ratioName = 'b0_{}'.format(termname)
+                            if (ratioName != '') and (ratioName not in result.keys()):
+                                result[ratioName] = truncRatio
+                                ratios.append(ratioName)
+                    elif key == 'childIDs':
+                        result[key] = str(dictChrom[key])
+                    else:
+                        result[key] = dictChrom[key]
+            # http://stackoverflow.com/questions/17839973/construct-pandas-dataframe-from-values-in-variables
+            curdf = pd.DataFrame(result, index=[0])
+            df = df.append(curdf)
+        df.index = range(len(df))
+        keys = keys[:] + ratios[:] + coeffs[:] + sigmas[:]
+        keys.remove('model')
+        df = df[keys]
+        df.to_excel(os.path.join(path, 'model_results.xlsx'),sheet_name=sheetname)
 
 def gen_term_pairs(selectedTerms, parmNames):
     # return a table of search param name and (sigmaVal, truncation level), e.g., 'Ap': sigmaAp, b0_ratio
@@ -416,15 +497,15 @@ def gen_term_pairs(selectedTerms, parmNames):
     sigmaParms = [aa for aa in parmNames if re.match(r'sigma[\S]*', aa) and (not re.match(r'sigma2D[\S]*', aa))]
     truncRatioParms = [aa for aa in parmNames if re.match(r'b[0-9]*[-_AaBbPp0-9]*', aa)]
 
-    fixedTermPairs = {"Ap": "b0_ratio", "Bp": "b0_ratio", "Am": "b0m_ratio", "Bn": "b0n_ratio"}
+    fixedTruncTerms = {"Ap": "b0_ratio", "Bp": "b0_ratio", "Am": "b0m_ratio", "Bn": "b0n_ratio"}
 
     for curTerm in selectedTerms:
         curSigma = ""
         curTruncRatio = ""
         if curTerm not in noneSigmaTerm:
-            if curTerm in fixedTermPairs.keys():
+            if curTerm in fixedTruncTerms.keys():
                 curSigma = r'sigma{}'.format(curTerm)
-                curTruncRatio = fixedTermPairs[curTerm]
+                curTruncRatio = fixedTruncTerms[curTerm]
             else:
                 for sigmaName in sigmaParms:
                     if curTerm in sigmaName:
@@ -473,6 +554,9 @@ if __name__ == "__main__":
     print "used terms and their parms: %s" % str(termpairs)
 
     signalfile = os.path.join(datapth, 'gauge_params_signals.txt')
-    ga = GeneticAlgorithm(chromNum=5, muteRate=0.08, accuracy=0.8,
-                        stageNum=3, rmsThres = 0.3, signalpath=signalfile)
-    ga.run(parmMin, parmMax, parmSamples, termpairs)
+
+    for method in ['tournament']: # 'rms_ranking', 'linear_ranking', 'tournament'
+    # for method in ['rms_ranking', 'linear_ranking', 'tournament']:
+        ga = GeneticAlgorithm(chromNum=3, eliteRate=0.02, muteRate=0.08, accuracy=0.8,
+                        stageNum=3, rmsThres = 0.3, signalpath=signalfile, selectmethod=method)
+        ga.run(parmMin, parmMax, parmSamples, termpairs)

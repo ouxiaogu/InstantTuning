@@ -12,17 +12,17 @@ Fitness Selection function:
     4. roulette wheel selection
 ----
 Note:
-    tagetSize: the target mate pool number
+    tagetSize: target size of the mate pool
 """
 import numpy as np
 from numpy import random
 
 def rms_ranking(rmses, singlepool, tagetSize):
     assert(len(singlepool) >= tagetSize)
-    singleNum = len(singlepool)
     singlermses = [rmses[ii] for ii in singlepool]
     ascendingIndexes  = np.argsort(singlermses)
-    return ascendingIndexes[:tagetSize]
+    selected = [singlepool[ii] for ii in ascendingIndexes[:tagetSize]]
+    return list(selected)
 
 def linear_ranking(rmses, singlepool, tagetSize, sp=1.5):
     '''
@@ -58,7 +58,7 @@ def linear_ranking(rmses, singlepool, tagetSize, sp=1.5):
     props = [1.*x/sumFitness for x in props]
 
     draw = random.choice(singlepool, tagetSize, p=props, replace=False)
-    return draw
+    return list(draw)
 
 def tournament(rmses, singlepool, tagetSize, tourSize = 2):
     '''
@@ -84,13 +84,12 @@ def tournament(rmses, singlepool, tagetSize, tourSize = 2):
     winner = draw[winneNo]
 
     # append winnerIdx into mate pool, and delete it from single pool
-    tagetSize -= 1
     try:
         winnerIdx = singlepool.index(winner)
         singlepool = list(np.delete(singlepool, winnerIdx))
     except ValueError:
         raise ValueError('The winner {} is not in pre-defined list: {}'.fromat(winner, singlepool))
-    return [winner]+tournament(rmses, singlepool, tagetSize, tourSize)[:]
+    return [winner] + tournament(rmses, singlepool, tagetSize-1, tourSize)[:]
 
 if __name__ == '__main__':
     random.seed(0)
