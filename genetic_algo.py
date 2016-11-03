@@ -178,22 +178,28 @@ class Chromosome(object):
         super(Chromosome, self).__init__()
         self.init_chrom_property()
 
-    def init_chrom_property(self, parmChrom=[], parmNum=0,
-                                parentID='-1_-1_-1_-1', childIDs=[],
+    def init_chrom_property(self, parmChrom=None, parmNum=0,
+                                parentID='-1_-1_-1_-1', childIDs=None,
                                 genIdx=0, chromIdx=0, model={}, rms=0.,
                                 ):
         '''two reasons for this init_chrom_property method:
             1. A whole picture for chm variables
             2. keep consistence for clone_chrom at anytime
         '''
-        self.parmChrom = parmChrom
+        if parmChrom is None:
+            self.parmChrom = []
+        else:
+            self.parmChrom = parmChrom
         self.parmNum = parmNum
         self.genIdx = genIdx
         self.chromIdx = chromIdx
         self.model = model
         self.rms = rms
         self.parentID = parentID
-        self.childIDs = childIDs
+        if childIDs is None:
+            self.childIDs = []
+        else:
+            self.childIDs = childIDs
         self.str_chrom()
 
     def set_chrom_result(self, genIdx=0, chromIdx=0, model={}, rms=0.,):
@@ -205,7 +211,6 @@ class Chromosome(object):
 
     def rand_init_chrom(self, parmSamples, parmBound):
         """randomly initialize chromosome by bin length and max range of the parameters"""
-        self.init_chrom_property()
         parmChrom = []
         for i in range(len(parmBound)):
             curParmVal = random.randint(0, parmSamples[i]) # np.random, low (inclusive) to high (exclusive).
@@ -283,9 +288,12 @@ class Chromosome(object):
 
 class Generation(object):
     """generation: keep all the chromosomes and rmses for 1 generation"""
-    def __init__(self, chromosomes=[]):
+    def __init__(self, chromosomes=None):
         super(Generation, self).__init__()
-        self.chromosomes = chromosomes
+        if chromosomes is None:
+            self.chromosomes = []
+        else:
+            self.chromosomes = chromosomes
 
     def set_gen_property(self, stageIdx, models, rmses):
         for i, chm in enumerate(self.chromosomes):
@@ -308,11 +316,14 @@ class Population(object):
             get_genealogy
             add_generation
     '''
-    def __init__(self, wakerAmount, chromosomes=[]):
+    def __init__(self, wakerAmount, chromosomes=None):
         super(Population, self).__init__()
         self.wakerAmount = wakerAmount
         self.matepoolNum = wakerAmount
-        self.chromosomes = chromosomes
+        if chromosomes is None:
+            self.chromosomes = []
+        else:
+            self.chromosomes = chromosomes
         self.totalIndividuals = len(self.chromosomes)
         self.singlepool = range(self.totalIndividuals)
 
@@ -405,30 +416,14 @@ class Population(object):
             fatherIdx = self.matepool[mateIdx]
             motherIdx = self.matepool[mateIdx-1]
             parmIdx = random.randint(0, parmNum) # np.random, low (inclusive) to high (exclusive).
-            # ypcLog, hard-coded testing
-            print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
-            print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
+
             wakerPoolChroms[chromIdx].crossover(wakerPoolChroms[chromIdx-1], parmIdx, parmBound)
-            wakerPoolChroms[chromIdx].parentID = '{}_{}_{}_{}'.format(fatherIdx/wakerNum+1, fatherIdx%wakerNum, motherIdx/wakerNum, motherIdx%wakerNum)
-            wakerPoolChroms[chromIdx-1].parentID = '{}_{}_{}_{}'.format(fatherIdx/wakerNum+1, fatherIdx%wakerNum, motherIdx/wakerNum, motherIdx%wakerNum)
-            # ypcLog, hard-coded testing
-            print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
-            print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
-            self.chromosomes[fatherIdx].childIDs.extend(['{}_{}'.format(stageIdx+1, chromIdx), '{}_{}'.format(stageIdx+1, chromIdx-1)])
-            self.chromosomes[motherIdx].childIDs.extend(['{}_{}'.format(stageIdx+1, chromIdx), '{}_{}'.format(stageIdx+1, chromIdx-1)])
-            # ypcLog, hard-coded testing
-            print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
-            print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
-            '''
+
             for ii in [chromIdx, chromIdx-1]:
                 wakerPoolChroms[ii].parentID = '{}_{}_{}_{}'.format(fatherIdx/wakerNum+1, fatherIdx%wakerNum, motherIdx/wakerNum, motherIdx%wakerNum)
-                # ypcLog, hard-coded testing
-                print "fatherIdx %d, childIDs = %s" % (fatherIdx, str(self.chromosomes[fatherIdx].childIDs))
-                print "motherIdx %d, childIDs = %s" % (motherIdx, str(self.chromosomes[motherIdx].childIDs))
                 self.chromosomes[fatherIdx].childIDs.append('{}_{}'.format(stageIdx+1, ii))
                 self.chromosomes[motherIdx].childIDs.append('{}_{}'.format(stageIdx+1, ii))
 
-            '''
             chromIdx -= 2
 
         # mutation
