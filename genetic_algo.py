@@ -549,7 +549,7 @@ if __name__ == "__main__":
     signalfile = os.path.join(datapth, 'gauge_params_signals.txt')
 
     # for method in ['linear_ranking']: # 'rms_ranking', 'linear_ranking', 'tournament'
-    for method in ['rms_ranking',  'tournament']: #'linear_ranking',
+    for method in ['rms_ranking', 'linear_ranking', 'tournament']: #'',
         ga = GeneticAlgorithm(chromNum=20, eliteRate=0.02, muteRate=0.08, accuracy=0.8,
                         stageNum=100, rmsThres = 0.3, signalpath=signalfile, selectmethod=method)
         ga.run(parmMin, parmMax, parmSamples, termpairs)
