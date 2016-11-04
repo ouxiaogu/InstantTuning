@@ -18,6 +18,8 @@ def snaptogrid(v, dataSeries):
 
 def RMS(error, wt):
     return np.sqrt(np.sum((np.power(error, 2) * wt))/np.sum(wt))
+def Range(series):
+    return series.max() - series.min()
 
 class Solver(object):
     def __init__(self, signalpath, regressor='linear'):
@@ -46,10 +48,10 @@ class Solver(object):
             elif term in ['Bp', 'Bn']:
                 self.term_to_inner[term] = 'bp'
         # hardcode this for speed
-        self.truncrange = np.arange(0.1, 2, 0.2)
+        self.truncrange = np.linspace(0.2, 2.4, 32)
 
     def __getSigmaName(self, innerterm):
-        if re.match(r'^[ab]p\d$', innerterm):
+        if re.match(r'^[ab]p\d+$', innerterm):
             return 'sigma_{}'.format(innerterm)
         else:
             return 'sigma{}'.format(innerterm)
@@ -71,6 +73,10 @@ class Solver(object):
         self.wcd = data['wafer_CD']
         self.target = np.array((self.wcd - self.pebcd)*self.tonesgn)
         self.wt = np.array(data['cost_wt'])
+
+        gaugecolumns = data.columns.tolist().index('process')
+        gaugecolumns = data.columns.tolist()[:gaugecolumns]
+        self._gauge = data[gaugecolumns]
 
     def getTermSig(self, termname, sigma=0, truncation=1, kinds=['vL', 'vR']):
         '''Note:
@@ -136,7 +142,69 @@ class Solver(object):
         self.error = self.result * self.tonesgn + self.pebcd - self.wcd
         coeffs = self.regresssor.coef_
         outmodel = self.packModelCoeff(coeffs)
-        return RMS(self.error, wt), outmodel
+        rms, calresult, groupstat = self.specErrors()
+        return rms, outmodel, calresult, groupstat
+
+    def specErrors(self):
+        self._gauge['error'] = self.error
+        validgauge = self._gauge.query('cost_wt>0')
+
+        rms = RMS(validgauge['error'], validgauge['cost_wt'])
+
+        grouprms = validgauge.groupby('group').agg(
+                    lambda x: RMS(x['error'], x['cost_wt']))['error']
+        groupstat = validgauge.groupby('group')['error'].describe().unstack()
+        groupstat['rms'] = grouprms
+        # groupstat['type'] = 
+
+        typerms = validgauge.groupby('type').agg(
+                  lambda x: RMS(x['error'], x['cost_wt']))['error']
+        rms1d = typerms.loc['1D']
+        rms2d = typerms.loc['2D']
+
+        sigma3 = validgauge['error'].std() * 3
+
+        anchorname = re.compile('anchor', re.IGNORECASE)
+        anchor = validgauge.filter(regex=anchorname, axis=0)
+        if anchor.empty:
+            anchor = validgauge.filter(regex=anchorname, axis=0)
+        if anchor.empty:
+            anchor = np.nan
+        else:
+            anchor = anchor['error'][anchor['error'].abs().argmin()]
+        range1d = Range(validgauge.query('type=="1D"')['error'])
+        range2d = Range(validgauge.query('type=="2D"')['error'])
+        unweightrms = RMS(validgauge['error'], np.ones(validgauge.shape[0]))
+        total = Range(self._gauge.query('cost_wt>=0').error)
+
+        spec = validgauge.filter(regex=re.compile('^spec$', re.IGNORECASE), axis=1)
+        if not spec.empty:
+            inspec = (validgauge['error'] < spec) & (validgauge['error'] > -1*spec)
+        else:
+            spec = validgauge.filter(regex=re.compile(r'^range_(min|max)$', re.IGNORECASE), axis=1)
+            if not spec.empty:
+                spec.columns = spec.columns.str.lower()
+                inspec = (validgauge['error'] < spec['range_max']) & (validgauge['error'] > spec['range_min'])
+            else:
+                inspec = None
+        if inspec is not None:
+            validgauge['inspec'] = inspec
+            ratio = inspec.sum()/float(inspec.size)
+            g1d = validgauge.query('type=="1D"')
+            ratio1d = g1d['inspec'].sum()/float(g1d['indpec'].size)
+            g2d = validgauge.query('type=="2D"')
+            ratio2d = g2d['inspec'].sum()/float(g2d['indpec'].size)
+        else:
+            ratio = np.nan
+            ratio1d = np.nan
+            ratio2d = np.nan
+
+        calresult = {'3sigma':sigma3, 'total':total, 'Anchor_error':anchor,
+                '2D_range':range2d, '1D_range':range1d, 'Unweighted_RMS':unweightrms,
+                '1D_rms':rms1d, '2D_rms':rms2d, 'in_spec_ratio':ratio,
+                '1D_in_spec_ratio':ratio1d, '2D_in_spec_ratio':ratio2d,
+                }
+        return rms, calresult, groupstat
 
     def packModelCoeff(self, coeffs):
         inmodel = self.model
@@ -147,7 +215,7 @@ class Solver(object):
 
 if __name__ == '__main__':
     curpath=os.path.dirname(os.path.realpath(__file__))
-    datapath = os.path.join(curpath, 'data\\v0', 'gauge_params_signals.txt')
+    datapath = os.path.join(curpath, 'data\\v1', 'gauge_params_signals.txt')
     s = Solver(datapath, regressor='linear')
     model = {'AG1':   (9.21, 0),
              'AG2':   (72.2, 0),
@@ -157,9 +225,10 @@ if __name__ == '__main__':
              'Bn':    (62.84, 0.5),
              'MG1':   (164.22, 0),
              'Slope': (0,0)}
-    rms, model = s.fit(model)
-    print 'Solver rms: {}'.format(rms)
-    print model
+    rms, outmodel, calresult, groupstat = s.fit(model)
+    print 'Solver specErrors: {}'.format(calresult)
+    print outmodel
+    print groupstat
     '''
     startime = timeit.default_timer()
     for i in range(100):

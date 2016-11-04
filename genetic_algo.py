@@ -26,7 +26,7 @@ import os, os.path
 from linear_solver import Solver
 from selectors import rms_ranking, linear_ranking, tournament
 
-DEBUG = 1
+DEBUG = 0
 
 class GeneticAlgorithm(object):
     """GA class"""
@@ -58,17 +58,14 @@ class GeneticAlgorithm(object):
 
         # optimization iterations
         while not self.check_stop(stageIdx):
-            newRmses, models = self.optimize(jobparms)
-            wakerGen = Generation(newChroms)
-            wakerGen.set_gen_property(stageIdx, models, newRmses)
-            self.population.append_gen(wakerGen)
-            if DEBUG:
-                print  "\nGA print, stage %s:\nminRMS = %f\nparmVals = %s\nrmses = %s\n" % (stageIdx, self.population.get_min_rms(), str(jobparms), str(newRmses))
+            self.wakerGen = Generation(newChroms)
+            self.optimize(jobparms, stageIdx)
+            self.population.append_gen(self.wakerGen)
             jobparms, newChroms = self.population.perform_ga_operations(self.eliteRate, self.muteRate, self.parmMin, self.parmMax, self.parmSamples, self.parmNames, self.parmBound, stageIdx, self.selectmethod) # self member variable parmMin~parmbound are lists
             stageIdx += 1
 
         if self.save:
-            self.population.save_model_results(path = os.path.dirname(self.signalpath), sheetname=self.selectmethod)
+            self.population.save_model_results(path = os.path.dirname(self.signalpath), postfix=self.selectmethod)
         pass
 
     def init(self, parmMin, parmMax, parmSamples, termpairs):
@@ -133,21 +130,17 @@ class GeneticAlgorithm(object):
             return True
         return False
 
-    def optimize(self, jobparms):
+    def optimize(self, jobparms, stageIdx):
         # fit a model, calculate rms based on current jobparms
         # possible option is add spec-ratio into cost function
         termpairs = self.termpairs
-        models = []
-        rmses = []
         for i, jobparm in enumerate(jobparms):
             jobinput = covert_job_parm(jobparm, termpairs)
-            rms, model = self.lm.fit(jobinput)
+            rms, model, calresult, groupstat = self.lm.fit(jobinput)
+            self.wakerGen.chromosomes[i].set_chrom_result(stageIdx, i, rms, model, calresult, groupstat)
             if DEBUG:
-                # print "Chromosome %d:\njobparm = %s\njobinput = %s\nrms = %f" % (i, str(jobparm), str(jobinput), rms)
+                print "Chromosome %d:\njobparm = %s\njobinput = %s\nrms = %f" % (i, str(jobparm), str(jobinput), rms)
                 pass
-            rmses.append(rms)
-            models.append(model)
-        return rmses, models
 
     def print_parm_samples(self):
         parmNum = len(self.parmNames)
@@ -165,48 +158,50 @@ class Chromosome(object):
         The chromosome parameters:
             parmChrom:  chrome binary code list
             parmNum:    number of parameters in chromosome
-
             genIdx:     the generation N.O. of current chrom
             chromIdx:   the chrom N.O. of current chrom
             strChrom:   string format binary code
-            model:      {term: sigma, truncation ratio, coefficient}
-            rms:        rms of current model
+
             parentID:   '{$fatherGenIdx}_{$fatherChromIdx}_{$MotherGenIdx}_{$MotherChromIdx}'
             childIDs:   a list, ['{$child1_genIdx}_{$child1_chromIdx}', ...]
+
+            rms:        rms of current model
+            model:      {term: sigma, truncation ratio, coefficient}
+            calresult:  {'3sigma':sigma3, 'total':total, 'Anchor_error':anchor,
+                        '2D_range':range2d, '1D_range':range1d, 'Unweighted_RMS':..}
+            groupstat:  DataFrame, statistic info for groups, rms, type, min, max
+
     """
     def __init__(self):
         super(Chromosome, self).__init__()
         self.init_chrom_property()
 
-    def init_chrom_property(self, parmChrom=None, parmNum=0,
-                                parentID='-1_-1_-1_-1', childIDs=None,
-                                genIdx=0, chromIdx=0, model={}, rms=0.,
-                                ):
-        '''two reasons for this init_chrom_property method:
-            1. A whole picture for chm variables
-            2. keep consistence for clone_chrom at anytime
-        '''
+    def init_chrom_property(self, parmChrom=None, parmNum=0, parentID='-1_-1_-1_-1', childIDs=None):
+        # only need to initialize the intrinsic property and list members
         if parmChrom is None:
-            self.parmChrom = []
-        else:
-            self.parmChrom = parmChrom
+            parmChrom = []
+        self.parmChrom = parmChrom
         self.parmNum = parmNum
-        self.genIdx = genIdx
-        self.chromIdx = chromIdx
-        self.model = model
-        self.rms = rms
+        self.str_chrom()
         self.parentID = parentID
         if childIDs is None:
-            self.childIDs = []
-        else:
-            self.childIDs = childIDs
-        self.str_chrom()
+            childIDs = []
+        self.childIDs = childIDs
 
-    def set_chrom_result(self, genIdx=0, chromIdx=0, model={}, rms=0.,):
+    def set_chrom_result(self, genIdx=0, chromIdx=0, rms=0., model=None, calresult=None, groupstat=None):
         self.genIdx = genIdx
         self.chromIdx = chromIdx
-        self.model = model
         self.rms = rms
+        if model is None:
+            model = {}
+        self.model = model
+        if calresult is None:
+            calresult = {}
+        self.calresult = calresult
+        if groupstat is None:
+            self.groupstat = pd.DataFrame()
+        else:
+            self.groupstat = groupstat
         self.str_chrom()
 
     def rand_init_chrom(self, parmSamples, parmBound):
@@ -218,6 +213,7 @@ class Chromosome(object):
             parmChrom += subChrom
         self.parmChrom = parmChrom # chromosome sequence
         self.parmNum = len(parmSamples)
+        self.str_chrom()
 
     def dec2bin(self, num, length):
         binChar = bin(num)
@@ -228,18 +224,10 @@ class Chromosome(object):
         return binVal
 
     def clone_chrom(self, nochildren=False):
+        # only need to clone the intrinsic information of a chromosome
         newChrom = Chromosome()
         newChrom.parmChrom = copy.deepcopy(self.parmChrom)
         newChrom.parmNum = self.parmNum
-        newChrom.genIdx = self.genIdx
-        newChrom.chromIdx = self.chromIdx
-        newChrom.model = copy.deepcopy(self.model)
-        newChrom.rms = self.rms
-        newChrom.parentID = self.parentID
-        if nochildren == True:
-            newChrom.childIDs = []
-        else:
-            newChrom.childIDs = copy.deepcopy(self.childIDs)
         return newChrom
 
     def back_parm(self, parmMin, parmMax, parmSamples, parmBound):
@@ -291,13 +279,8 @@ class Generation(object):
     def __init__(self, chromosomes=None):
         super(Generation, self).__init__()
         if chromosomes is None:
-            self.chromosomes = []
-        else:
-            self.chromosomes = chromosomes
-
-    def set_gen_property(self, stageIdx, models, rmses):
-        for i, chm in enumerate(self.chromosomes):
-            chm.set_chrom_result(stageIdx, i, models[i], rmses[i])
+            chromosomes = []
+        self.chromosomes = chromosomes
 
 class Population(object):
     '''
@@ -321,9 +304,8 @@ class Population(object):
         self.wakerAmount = wakerAmount
         self.matepoolNum = wakerAmount
         if chromosomes is None:
-            self.chromosomes = []
-        else:
-            self.chromosomes = chromosomes
+            chromosomes = []
+        self.chromosomes = chromosomes
         self.totalIndividuals = len(self.chromosomes)
         self.singlepool = range(self.totalIndividuals)
 
@@ -403,15 +385,11 @@ class Population(object):
         for ii, parentIdx in enumerate(elitepool):
             wakerPoolChroms[ii].parentID =  '{}_{}_{}_{}'.format(parentIdx/wakerNum+1, parentIdx%wakerNum, parentIdx/wakerNum+1, parentIdx%wakerNum)
             self.chromosomes[parentIdx].childIDs.append('{}_{}'.format(stageIdx+1, ii))
-            # ypcLog, hard-coded testing
-            print "parentIdx %d, childIDs = %s" % (parentIdx, str(self.chromosomes[parentIdx].childIDs))
 
         # crossover
         parmNum = len(parmSamples) ## perform GA operator on unit of parm
         chromIdx = wakerNum - 1
         while (chromIdx > eliteNum):
-            print "chromIdx = %d" % chromIdx
-
             mateIdx = chromIdx - eliteNum
             fatherIdx = self.matepool[mateIdx]
             motherIdx = self.matepool[mateIdx-1]
@@ -427,8 +405,12 @@ class Population(object):
             chromIdx -= 2
 
         # mutation
+        sp = 5
+        muteRatioFunc = lambda x: 7 - sp + 2.*(sp-2)*x/(wakerNum-1) #fittest first
+        muteRatios = [muteRatioFunc(ii) for ii in range(wakerNum)]
+        # print muteRatios
         for ii in range(wakerNum):
-            muteCri = ii * muteRate # binary
+            muteCri = muteRatios[ii] * muteRate # ypcChange, ensure some mutation
             parmIndexes = [pp for pp in range(parmNum) if random.random() < muteCri] #np, half-open interval [0.0, 1.0).
             wakerPoolChroms[ii].mutate(parmIndexes, parmSamples, parmBound)
             if DEBUG:
@@ -442,25 +424,25 @@ class Population(object):
             jobparms.append(jobparmtable)
         return jobparms, wakerPoolChroms
 
-    def save_model_results(self, path=os.getcwd(), sheetname='sheet1'):
-        keys = ['genIdx', 'chromIdx', 'strChrom', 'rms', 'model', 'parentID', 'childIDs'] # hard-coded
+    def save_model_results(self, path=os.getcwd(), postfix=''):
+        chromKeys = ['genIdx', 'chromIdx', 'strChrom', 'rms',  'parentID', 'childIDs', 'model', 'calresult', 'groupstat'] # hard-coded
         fixedTruncTerms = {"Ap": "b0_ratio", "Bp": "b0_ratio", "Am": "b0m_ratio", "Bn": "b0n_ratio"}# hard-coded
-        df = pd.DataFrame()
-        for chm in self.chromosomes:
+        calresults = pd.DataFrame()
+        groupstats = pd.DataFrame()
+        for ii, chm in enumerate(self.chromosomes):
             dictChrom = chm.__dict__
-            result = {}
-            coeffs = []
-            sigmas = []
-            ratios = []
-            for key in keys:
+            modelresult = {}
+            ratios, coeffs, sigmas, calresultkeys = [], [], [], []
+
+            for key in chromKeys:
                 if key in dictChrom.keys():
                     if key == 'model':
                         for termname, termvals in dictChrom['model'].items():
                             sigma, truncRatio, coeff = termvals
-                            result['c{}'.format(termname)] = coeff
+                            modelresult['c{}'.format(termname)] = coeff
                             coeffs.append('c{}'.format(termname))
                             if sigma != 0:
-                                result['sigma{}'.format(termname)] = sigma
+                                modelresult['sigma{}'.format(termname)] = sigma
                                 sigmas.append('sigma{}'.format(termname))
                             ratioName = ''
                             if truncRatio != 0:
@@ -468,21 +450,37 @@ class Population(object):
                                     ratioName = fixedTruncTerms[termname]
                                 else:
                                     ratioName = 'b0_{}'.format(termname)
-                            if (ratioName != '') and (ratioName not in result.keys()):
-                                result[ratioName] = truncRatio
+                            if (ratioName != '') and (ratioName not in modelresult.keys()):
+                                modelresult[ratioName] = truncRatio
                                 ratios.append(ratioName)
                     elif key == 'childIDs':
-                        result[key] = str(dictChrom[key])
+                        modelresult[key] = str(dictChrom[key])
+                    elif key == 'calresult':
+                        for kk, vv in dictChrom[key].items():
+                            modelresult[kk] = vv
+                            calresultkeys.append(kk)
+                    elif key == 'groupstat':
+                        groupstat = dictChrom[key]
+                        groupstat.ix[:, 'ProcessID'] = ii
+                        groupstats = groupstats.append(groupstat)
                     else:
-                        result[key] = dictChrom[key]
+                        modelresult[key] = dictChrom[key]
             # http://stackoverflow.com/questions/17839973/construct-pandas-dataframe-from-values-in-variables
-            curdf = pd.DataFrame(result, index=[0])
-            df = df.append(curdf)
-        df.index = range(len(df))
-        keys = keys[:] + ratios[:] + coeffs[:] + sigmas[:]
-        keys.remove('model')
-        df = df[keys]
-        df.to_excel(os.path.join(path, 'model_results.xlsx'),sheet_name=sheetname)
+            curcalresults = pd.DataFrame(modelresult, index=[0])
+            calresults = calresults.append(curcalresults)
+        calresults.index = range(len(calresults))
+        groupstats.ix[:, 'group'] = groupstats.index
+        groupstats.set_index(keys = 'ProcessID', inplace=True)
+        keys = chromKeys[:] + ratios[:] + coeffs[:] + sigmas[:] + calresultkeys[:]
+        keys = [kk for kk in keys if kk not in ['model', 'calresult', 'groupstat']]
+        calresults = calresults[keys]
+        calresultfile = 'model_results'
+        groupstatfile = 'group_results'
+        if postfix != '':
+            calresultfile += '_{}'.format(postfix)
+            groupstatfile += '_{}'.format(postfix)
+        calresults.to_excel(os.path.join(path, calresultfile+'.xlsx'))
+        groupstats.to_excel(os.path.join(path, groupstatfile+'.xlsx'))
 
 def gen_term_pairs(selectedTerms, parmNames):
     # return a table of search param name and (sigmaVal, truncation level), e.g., 'Ap': sigmaAp, b0_ratio
@@ -535,8 +533,8 @@ def covert_job_parm(jobparm, termpairs):
 
 if __name__ == "__main__":
     cwd = os.getcwd()
-    datapth = os.path.join(cwd, "data\\v0")
-    infile = os.path.join(datapth, "GA_init_setting_v0.xlsx")
+    datapth = os.path.join(cwd, "data\\v1")
+    infile = os.path.join(datapth, "GA_init_setting_v1.xlsx")
     df = pd.read_excel(infile)
 
     parmMin = df[['parmName', 'parmMin']].set_index('parmName').to_dict().values()[0]
@@ -550,8 +548,8 @@ if __name__ == "__main__":
 
     signalfile = os.path.join(datapth, 'gauge_params_signals.txt')
 
-    for method in ['tournament']: # 'rms_ranking', 'linear_ranking', 'tournament'
-    # for method in ['rms_ranking', 'linear_ranking', 'tournament']:
-        ga = GeneticAlgorithm(chromNum=3, eliteRate=0.02, muteRate=0.08, accuracy=0.8,
-                        stageNum=3, rmsThres = 0.3, signalpath=signalfile, selectmethod=method)
+    # for method in ['linear_ranking']: # 'rms_ranking', 'linear_ranking', 'tournament'
+    for method in ['rms_ranking',  'tournament']: #'linear_ranking',
+        ga = GeneticAlgorithm(chromNum=20, eliteRate=0.02, muteRate=0.08, accuracy=0.8,
+                        stageNum=100, rmsThres = 0.3, signalpath=signalfile, selectmethod=method)
         ga.run(parmMin, parmMax, parmSamples, termpairs)
