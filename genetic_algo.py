@@ -4,16 +4,20 @@ Created on Thu Oct 06 14:14:24 2016
 
 @author: peyang
 
-Genetic algorithm in python
-    1. Initialize the search-able parameters into GA seeds by random algorithm
+Instant tuning tool-Genetic algorithm implementation
+    1. Initialize the search-able parameters into GA seeds by random algorithm,
+    the GA search space and sampling grids are deliberately designed, so all the
+    chromosomes can be translated into pre-collected term signals.
     2. Get the RMS value of current generation of chromosomes by Linear solver
-    3. Fitness selection include two steps:
-        1). elite selection: the elites only will mutate
-        2). mates selection: select the individuals into the mate pool, and
-        crossover pair by pair, 3 selection methods are implemented:
-        rms_ranking, linear_ranking, tournament
-    4. Crossover and mutate to reproduce the next generation of chromosomes
-    5. Repeat 2-4 until met stop condition
+    3. GA operations (#population = N)
+        1). elite selection: the elites only will mutate (#elites = M)
+        2). mates selection: select individuals into the mate pool(size of mate
+        pool is N-M), 3 selection methods are implemented: rms_ranking,
+        linear_ranking, tournament
+        3). crossover in the mate pool pair by pair to reproduce next generation
+        4). mutate the crossover-ed offspring and the elites, get all the next
+        generation of chromosomes
+    4. Repeat 2-3 until met stop condition
 """
 
 from numpy import random
@@ -40,7 +44,7 @@ class GeneticAlgorithm(object):
         self.stageNum = stageNum
         self.rmsThres = rmsThres
         self.signalpath = signalpath
-        self.lm = Solver(signalpath, regressor='linear')
+        self.lm = Solver(signalpath,  modelkind='ADI')
         self.selectmethod = selectmethod
         self.save = save
 
@@ -65,7 +69,7 @@ class GeneticAlgorithm(object):
             stageIdx += 1
 
         if self.save:
-            self.population.save_model_results(path = os.path.dirname(self.signalpath), postfix=self.selectmethod)
+            self.population.save_model_results(path = self.signalpath, postfix=self.selectmethod)
         pass
 
     def init(self, parmMin, parmMax, parmSamples, termpairs):
@@ -136,7 +140,7 @@ class GeneticAlgorithm(object):
         termpairs = self.termpairs
         for i, jobparm in enumerate(jobparms):
             jobinput = covert_job_parm(jobparm, termpairs)
-            rms, model, calresult, groupstat = self.lm.fit(jobinput)
+            rms, model, calresult, groupstat = self.lm.fit(jobinput, method='nonlinear')
             self.wakerGen.chromosomes[i].set_chrom_result(stageIdx, i, rms, model, calresult, groupstat)
             if DEBUG:
                 print "Chromosome %d:\njobparm = %s\njobinput = %s\nrms = %f" % (i, str(jobparm), str(jobinput), rms)
@@ -292,12 +296,6 @@ class Population(object):
             A list, containing the whole history of entire family
             one individual instance is a chromosome
         wakerAmount: current environment only sustain a constant waker number
-    ----
-    Methods:
-        ----
-        Recording Methods:
-            get_genealogy
-            add_generation
     '''
     def __init__(self, wakerAmount, chromosomes=None):
         super(Population, self).__init__()
@@ -346,7 +344,7 @@ class Population(object):
         if method == 'rms_ranking':
             self.matepool = rms_ranking(self.rmses, self.singlepool, self.matepoolNum)
         elif method == 'linear_ranking':
-            self.matepool = linear_ranking(self.rmses, self.singlepool, self.matepoolNum, sp=1.5)
+            self.matepool = linear_ranking(self.rmses, self.singlepool, self.matepoolNum, sp=1.8)
         elif method == 'tournament':
             self.matepool = tournament(self.rmses, self.singlepool, self.matepoolNum, tourSize=2)
 
@@ -438,21 +436,25 @@ class Population(object):
                 if key in dictChrom.keys():
                     if key == 'model':
                         for termname, termvals in dictChrom['model'].items():
-                            sigma, truncRatio, coeff = termvals
-                            modelresult['c{}'.format(termname)] = coeff
-                            coeffs.append('c{}'.format(termname))
-                            if sigma != 0:
-                                modelresult['sigma{}'.format(termname)] = sigma
-                                sigmas.append('sigma{}'.format(termname))
-                            ratioName = ''
-                            if truncRatio != 0:
-                                if termname in fixedTruncTerms.keys():
-                                    ratioName = fixedTruncTerms[termname]
-                                else:
-                                    ratioName = 'b0_{}'.format(termname)
-                            if (ratioName != '') and (ratioName not in modelresult.keys()):
-                                modelresult[ratioName] = truncRatio
-                                ratios.append(ratioName)
+                            if termname == 'thres':
+                                modelresult['thres'] = termvals
+                                calresultkeys.append(termname)
+                            else:
+                                sigma, truncRatio, coeff = termvals
+                                modelresult['c{}'.format(termname)] = coeff
+                                coeffs.append('c{}'.format(termname))
+                                if sigma != 0:
+                                    modelresult['sigma{}'.format(termname)] = sigma
+                                    sigmas.append('sigma{}'.format(termname))
+                                ratioName = ''
+                                if truncRatio != 0:
+                                    if termname in fixedTruncTerms.keys():
+                                        ratioName = fixedTruncTerms[termname]
+                                    else:
+                                        ratioName = 'b0_{}'.format(termname)
+                                if (ratioName != '') and (ratioName not in modelresult.keys()):
+                                    modelresult[ratioName] = truncRatio
+                                    ratios.append(ratioName)
                     elif key == 'childIDs':
                         modelresult[key] = str(dictChrom[key])
                     elif key == 'calresult':
@@ -483,15 +485,19 @@ class Population(object):
         groupstats.to_excel(os.path.join(path, groupstatfile+'.xlsx'))
 
 def gen_term_pairs(selectedTerms, parmNames):
-    # return a table of search param name and (sigmaVal, truncation level), e.g., 'Ap': sigmaAp, b0_ratio
+    ''' generate a dict, key is used term, value is tuples contain sigma, truncation
+        Args:
+        ----
+            selectedTerms: list, define the useterms
+            parmNames: iterable, a list or a dict whose keys are model parameter name
+        Return:
+        ----
+            [0] termpairs, dict like {'A': ('', ''), 'Bp': ('sigmaBp', 'b0_ratio'), ...}
+    '''
     termpairs = {}
     noneSigmaTerm = {"A", "Mav", "Slope"}
 
-    sigmaParms = [aa for aa in parmNames if re.match(r'sigma[\S]*', aa) and (not re.match(r'sigma2D[\S]*', aa))]
-    truncRatioParms = [aa for aa in parmNames if re.match(r'b[0-9]*[-_AaBbPp0-9]*', aa)]
-
     fixedTruncTerms = {"Ap": "b0_ratio", "Bp": "b0_ratio", "Am": "b0m_ratio", "Bn": "b0n_ratio"}
-
     for curTerm in selectedTerms:
         curSigma = ""
         curTruncRatio = ""
@@ -500,14 +506,11 @@ def gen_term_pairs(selectedTerms, parmNames):
                 curSigma = r'sigma{}'.format(curTerm)
                 curTruncRatio = fixedTruncTerms[curTerm]
             else:
-                for sigmaName in sigmaParms:
-                    if curTerm in sigmaName:
-                        curSigma = sigmaName
-                        break
-                for truncRatio in truncRatioParms:
-                    if curTerm in truncRatio:
-                        curTruncRatio = truncRatio
-                        break
+                for parmname in parmNames:
+                    if re.match(r'^sigma_?{}$'.format(curTerm), parmname, re.I) or re.match(r'^sigma_?{}_[\S]+$'.format(curTerm), parmname, re.I):
+                        curSigma = parmname
+                    elif re.match(r'^b0_?{}$'.format(curTerm), parmname, re.I):
+                        curTruncRatio = parmname
         termpairs[curTerm] = (curSigma, curTruncRatio)
     return termpairs
 
@@ -533,8 +536,8 @@ def covert_job_parm(jobparm, termpairs):
 
 if __name__ == "__main__":
     cwd = os.getcwd()
-    datapth = os.path.join(cwd, "data\\v1")
-    infile = os.path.join(datapth, "GA_init_setting_v1.xlsx")
+    datapath = os.path.join(cwd, "data\\ADI\\all")
+    infile = os.path.join(datapath, "GA_init_setting.xlsx")
     df = pd.read_excel(infile)
 
     parmMin = df[['parmName', 'parmMin']].set_index('parmName').to_dict().values()[0]
@@ -542,14 +545,17 @@ if __name__ == "__main__":
     parmSamples = df[['parmName', 'parmSamples']].set_index('parmName').to_dict().values()[0]
     parmNames = parmSamples.keys()
 
-    useterms = ['AG1', 'AG2', 'Ap', 'Bp', 'Am', 'Bn', 'MG1', 'Slope']
+    # useterms = ['AG1', 'AG2', 'Ap', 'Bp', 'Am', 'Bn', 'MG1', 'Slope']
+    useterms = ['AG1', 'Bp', 'Am', 'Bn', 'Slope', 'DE1', 'CDO1', 'MGS1', 'MGS']
     termpairs = gen_term_pairs(useterms, parmNames)
     print "used terms and their parms: %s" % str(termpairs)
 
-    signalfile = os.path.join(datapth, 'gauge_params_signals.txt')
-
-    # for method in ['linear_ranking']: # 'rms_ranking', 'linear_ranking', 'tournament'
-    for method in ['rms_ranking', 'linear_ranking', 'tournament']: #'',
+    import timeit
+    start = timeit.default_timer()
+    for method in ['linear_ranking', 'tournament']: # 'rms_ranking', 'linear_ranking', 'tournament'
+    # for method in ['rms_ranking', 'linear_ranking', 'tournament']: #'',
         ga = GeneticAlgorithm(chromNum=20, eliteRate=0.02, muteRate=0.08, accuracy=0.8,
-                        stageNum=100, rmsThres = 0.3, signalpath=signalfile, selectmethod=method)
+                        stageNum=100, rmsThres = 0.3, signalpath=datapath, selectmethod=method)
         ga.run(parmMin, parmMax, parmSamples, termpairs)
+    end = timeit.default_timer()
+    print 'elapsed time: {}'.format(end - start)
