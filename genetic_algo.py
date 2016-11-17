@@ -537,7 +537,7 @@ def covert_job_parm(jobparm, termpairs):
 if __name__ == "__main__":
     cwd = os.getcwd()
     datapath = os.path.join(cwd, "data\\ADI\\all")
-    infile = os.path.join(datapath, "GA_init_setting.xlsx")
+    infile = os.path.join(datapath, "GA_init_setting_sparse.xlsx")
     df = pd.read_excel(infile)
 
     parmMin = df[['parmName', 'parmMin']].set_index('parmName').to_dict().values()[0]
@@ -552,8 +552,8 @@ if __name__ == "__main__":
 
     import timeit
     start = timeit.default_timer()
-    for method in ['linear_ranking', 'tournament']: # 'rms_ranking', 'linear_ranking', 'tournament'
-    # for method in ['rms_ranking', 'linear_ranking', 'tournament']: #'',
+    # for method in ['linear_ranking', 'tournament']: # 'rms_ranking', 'linear_ranking', 'tournament'
+    for method in ['linear_ranking', 'tournament', 'rms_ranking']: # 'rms_ranking',
         ga = GeneticAlgorithm(chromNum=20, eliteRate=0.02, muteRate=0.08, accuracy=0.8,
                         stageNum=100, rmsThres = 0.3, signalpath=datapath, selectmethod=method)
         ga.run(parmMin, parmMax, parmSamples, termpairs)
