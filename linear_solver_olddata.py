@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 """
+Created on Fri Dec 02 16:32:59 2016
+
+@author: peyang
+"""
+
+# -*- coding: utf-8 -*-
+"""
 Created on Fri Oct 14 09:34:51 2016
 
 @author: hshi
@@ -44,9 +51,8 @@ def splitXterm(termname):
         return m.groups()
 
 class Solver(object):
-    def __init__(self, signalpath, modelkind='ADI', isgeneric=False):
+    def __init__(self, signalpath, modelkind='ADI'):
         self.modelkind = modelkind
-        self.isgeneric = isgeneric
         self.__getdata(signalpath)
         self.__defineTerms()
         self.regressor = linear_model.LinearRegression()
@@ -86,10 +92,7 @@ class Solver(object):
     def __defineTerms(self):
         self.ptdterms = ['Mav', 'A', 'AG1', 'AG2', 'Ap', 'Bp','Am', 'Bn', 'MG1', 'MG2', 'Slope']
         self.ptdterms_inner = ['Mav', 'A', 'AG1','MG1', 'Slope']
-        if self.isgeneric:
-            self.ntdterms = ['CDO1_2d', 'DE1_dev', 'MGS1_dev', 'MGS_shrk']
-        else:
-            self.ntdterms = ['CDO1', 'DE1', 'MGS1', 'MGS']
+        self.ntdterms = ['CDO1', 'DE1', 'MGS1', 'MGS']
         self.term_to_inner = {}
         for term in self.ptdterms+self.ntdterms:
             if term in (self.ptdterms_inner + self.ntdterms):
@@ -99,19 +102,22 @@ class Solver(object):
             elif term == 'MG2':
                 self.term_to_inner[term] = 'MG2'
             elif term in ['Ap', 'Am']:
-                self.term_to_inner[term] = 'Ap'
+                self.term_to_inner[term] = 'ap'
             elif term in ['Bp', 'Bn']:
-                self.term_to_inner[term] = 'Ap'
-        self.trunclist_ap = self.__getTruncationlist('Ap')
-        self.trunclist_bp = self.__getTruncationlist('Ap')
+                self.term_to_inner[term] = 'bp'
+        self.trunclist_ap = self.__getTruncationlist('ap')
+        self.trunclist_bp = self.__getTruncationlist('bp')
 
     def __getSigmaName(self, innerterm):
-        return 'sigma{}'.format(innerterm)
-    def __getTruncTermByb0(self, b0, kind='Ap'):
-        if kind == 'Ap':
+        if re.match(r'^[ab]p\d+$', innerterm):
+            return 'sigma_{}'.format(innerterm)
+        else:
+            return 'sigma{}'.format(innerterm)
+    def __getTruncTermByb0(self, b0, kind='ap'):
+        if kind == 'ap':
             idx = snaptogrid(b0, self.trunclist_ap['ratio'], ret='index')
             return self.trunclist_ap.loc[idx, 'term']
-        elif kind == 'Bp':
+        elif kind == 'bp':
             idx = snaptogrid(b0, self.trunclist_bp['ratio'], ret='index')
             return self.trunclist_bp.loc[idx, 'term']
         else:
@@ -119,10 +125,10 @@ class Solver(object):
     def __getSignalName(self, innterterm, sigkind):
         return '{}_{}'.format(sigkind, innterterm)
 
-    def __getTruncationlist(self, kind='Ap'):
-        trunc = self.params.filter(regex=r'b0{}_\d+'.format(kind)).iloc[0].reset_index()
+    def __getTruncationlist(self, kind='ap'):
+        trunc = self.params.filter(regex=r'b0_{}\d+'.format(kind)).iloc[0].reset_index()
         trunc.columns = ['term', 'ratio']
-        trunc['term'] = trunc['term'].str.extract(r'b0({}_\d+)'.format(kind))
+        trunc['term'] = trunc['term'].str.extract(r'b0_({}\d+)'.format(kind))
         trunc = trunc[['term','ratio']]
         return trunc
 
@@ -136,7 +142,7 @@ class Solver(object):
             termname = self.term_to_inner[termname]
         except KeyError:
             raise KeyError('term {} is no in pre-defined list: {}'.format(termname, self.term_to_inner.keys))
-        if termname in ['Ap', 'Bp']:
+        if termname in ['ap', 'bp']:
             termname = self.__getTruncTermByb0(truncation, kind=termname)
 
         if termname in ['A', 'Mav', 'Slope']:
@@ -152,16 +158,14 @@ class Solver(object):
 
     def getXtermSig(self, termname, parameters, kinds=['vL', 'vR', 'sL', 'sR']):
         terms = splitXterm(termname)
-        param, fun, dfun = parameters
-        if fun is None:
-            fun = lambda x,y: x*y
-        if dfun is None:
-            dfun = lambda x,xp,y,yp: x*yp+xp*y
+        params, = parameters
+        fun = lambda x,y: x*y
+        dfun = lambda x,y,xp,yp: x*yp+xp*y
 
         signals = pd.DataFrame(columns=['{}_{}'.format(x, termname) for x in kinds])
         basesignals = []
         for term in terms:
-            basesignals.append(self.getTermSig(term, *param.get(term, (0,0)), kinds=kinds))
+            basesignals.append(self.getTermSig(term, *params.get(term, (0,0)), kinds=kinds))
         for kind in kinds:
             if kind in ['vL', 'vR']:
                 signals['{}_{}'.format(kind, termname)] = fun(*[x.filter(regex=kind).iloc[:,0] for x in basesignals])
@@ -179,10 +183,10 @@ class Solver(object):
         except KeyError:
             raise KeyError('term {} is no in pre-defined list: {}'.format(termname, self.term_to_inner.keys))
 
-        if termname == 'Ap':
+        if termname == 'ap':
             termname = self.__getTruncTermByb0(truncation, kind=termname)
             truncation = snaptogrid(truncation, self.trunclist_ap['ratio'], ret='value')
-        if termname == 'Bp':
+        if termname == 'bp':
             termname = self.__getTruncTermByb0(truncation, kind=termname)
             truncation = snaptogrid(truncation, self.trunclist_bp['ratio'], ret='value')
 
@@ -202,11 +206,11 @@ class Solver(object):
                 model[term] = self.getSnapedTerm(term, sigma, truncation)
             else:
                 terms = splitXterm(term)
-                params, fun, dfun = self.model[term]
+                params, = self.model[term]
                 newparams = {}
                 for t in terms:
                     newparams[t] = self.getSnapedTerm(t, *params[t])
-                model[term] = (newparams, fun, dfun)
+                model[term] = newparams
         return model
 
     def getModelSigs(self, model=None, getslopes=True):
@@ -265,10 +269,9 @@ class Solver(object):
                 value: term names in model
         Return:
         ----
-            [0] RMS
-            [1] a dict containing model form
-            [2] a dict containing model calibration performance result
-            [3] a pandas.DataFrame contain group results
+            [0] a dict containing all model error related results
+            [1] a pandas.Series containing coefficient of each terms
+            [2] the threshold value, for ADI model only
         '''
         self.model = model
         self.getModelSigs(model)
@@ -429,34 +432,25 @@ class Solver(object):
                 }
         return rms, calresult, groupstat
 
-
 if __name__ == '__main__':
     import timeit
 
     curpath=os.path.dirname(os.path.realpath(__file__))
     '''
-    datapath = os.path.join(curpath, 'data', 'HOD', 'generic')
+    datapath = os.path.join(curpath, 'data', 'HOD')
     s = Solver(datapath, modelkind='HOD')
-    model = {'AG1':   (1.14, 0),
-             'AG2':   (63.68, 0),
-             'Ap':    (83.53, 1.6),
-             'Bp':    (160.62, 1.7),
-             'Am':    (154.30, 1.9),
-             'Bn':    (86.72, 0.4),
-             'MG1':   (161.93, 0),
-             'Slope': (0,0),
-             'MGS1_dev': (75.67, 0),
-             'DE1_dev': (70, 0),
-             #'Bp*Bn': ({'Bp':(58.4, 1), 'Bn':(120.86, 0.5)},
-             #           lambda x,y: x*y, lambda x,xp,y,yp: x*yp+xp*y,),
-             #'DE1_dev*DE1_dev':({'DE1_dev':(50.518, 0), 'DE1_dev':(50.518, 0)},
-             #                    None, None,),
-             #'Slope*Bn':({'Slope':(0, 0), 'Bn':(120.86, 0.5)}, None, None),
-             }
+    model = {'AG1':   (9.21, 0),
+             'AG2':   (72.2, 0),
+             'Ap':    (102.02, 1.7),
+             'Bp':    (168, 1.7),
+             'Am':    (153.73, 2),
+             'Bn':    (62.84, 0.5),
+             'MG1':   (164.22, 0),
+             'Slope': (0,0)}
 
     '''
     datapath = os.path.join(curpath, 'data', 'ADI', 'all')
-    s = Solver(datapath, modelkind='ADI', isgeneric=False)
+    s = Solver(datapath, modelkind='ADI')
     model = {'AG1':   (13.6508, 0),
              'Bp':    (54.0945, 1.76129),
              'Am':    (96.9291, 2.4),
@@ -465,17 +459,15 @@ if __name__ == '__main__':
              'CDO1':  (55.4331, 0),
              'DE1':   (82.2047, 0),
              'MGS1':  (183.071, 0),
-             'Bp*Bn': ({'Bp':(58.4, 1), 'Bn':(120.86, 0.5)},
-                       lambda x,y: x*y, lambda x,xp,y,yp: x*yp+xp*y,),
-             'DE1*DE1':({'DE1':(50.518, 0), 'DE1':(50.518, 0)},
-                                None, None,),
-             'Slope*Bn':({'Slope':(0, 0), 'Bn':(120.86, 0.5)}, None, None),
-            }
-    # '''
+             'MGS':   (63.4646, 0),
+             'Bp*Bn': ({'Bp':(58.4, 1), 'Bn':(120.86, 0.5)}, ),
+             # 'DE1*DE1':({'DE1':(50.518, 0), 'DE1':(50.518, 0)}, None, None,),
+             'DE1*DE1':({'DE1':(50.518, 0), 'DE1':(50.518, 0)}, ),
+             'Slope*Bn':({'Slope':(0, 0), 'Bn':(120.86, 0.5)}, ),
+             }
+    #'''
     start = timeit.default_timer()
-    # for i in range(10):
-        # result = s.fit(model, method='HOD0')
+    #result = s.fit(model, method='HOD1')
     rms, outmodel, calresult, groupstat = s.fit(model, method='nonlinear')
     end = timeit.default_timer()
     print 'elapsed time: {}'.format(end - start)
-    print s.getSnapedModel()
